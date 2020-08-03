@@ -7,7 +7,6 @@ use diesel::{
 use dotenv::dotenv;
 
 use crate::{actions as adapter, error::*, models::*};
-
 use std::time::Duration;
 
 #[cfg(feature = "runtime-async-std")]
@@ -16,8 +15,10 @@ use async_std::task::spawn_blocking;
 #[cfg(feature = "runtime-tokio")]
 use tokio::task::spawn_blocking;
 
+type ConnectionPool = Pool<ConnectionManager<adapter::Connection>>;
+
 pub struct DieselAdapter {
-    pool: Pool<ConnectionManager<adapter::Connection>>,
+    pool: ConnectionPool,
     is_filtered: bool,
 }
 
@@ -40,13 +41,28 @@ impl<'a> DieselAdapter {
 
         let conn = pool
             .get()
-            .map_err(|err| CasbinError::from(AdapterError(Box::new(Error::PoolError(err)))));
+            .map_err(|err| CasbinError::from(AdapterError(Box::new(Error::PoolError(err)))))?;
+
+        adapter::new(&conn).map(|_| Self {
+            pool,
+            is_filtered: false,
+        })
+    }
+    pub fn new_with_pool(pool: ConnectionPool) -> Result<Self> {
+        let conn = &pool
+            .get()
+            .map_err(|err| CasbinError::from(AdapterError(Box::new(Error::PoolError(err)))))?;
 
         adapter::new(conn).map(|_| Self {
             pool,
             is_filtered: false,
         })
     }
+}
+
+pub(crate) struct InternalFilter {
+    pub p: Vec<String>,
+    pub g: Vec<String>,
 }
 
 pub(crate) fn save_policy_line(ptype: &str, rule: &[String]) -> Option<NewCasbinRule> {
@@ -190,13 +206,19 @@ impl Adapter for DieselAdapter {
             .get()
             .map_err(|err| CasbinError::from(AdapterError(Box::new(Error::PoolError(err)))))?;
 
+        let filter = InternalFilter {
+            p: f.p.iter().map(|s| s.to_string()).collect(),
+            g: f.g.iter().map(|s| s.to_string()).collect(),
+        };
+
         #[cfg(feature = "runtime-tokio")]
-        let rules = spawn_blocking(move || adapter::load_policy(conn))
+        let rules = spawn_blocking(move || adapter::load_policy_with_filter(conn, Some(filter)))
             .await
             .map_err(|e| casbin::error::AdapterError(Box::new(e)))??;
 
         #[cfg(feature = "runtime-async-std")]
-        let rules = spawn_blocking(move || adapter::load_policy(conn)).await?;
+        let rules =
+            spawn_blocking(move || adapter::load_policy_with_filter(&conn, Some(filter))).await?;
 
         for casbin_rule in &rules {
             let rule = load_filtered_policy_line(casbin_rule, &f);
@@ -271,7 +293,7 @@ impl Adapter for DieselAdapter {
         {
             spawn_blocking(move || {
                 if let Some(new_rule) = save_policy_line(&ptype_c, &rule) {
-                    return adapter::add_policy(conn, new_rule);
+                    return adapter::add_policy(&conn, new_rule);
                 }
                 Ok(false)
             })
@@ -283,7 +305,7 @@ impl Adapter for DieselAdapter {
         {
             spawn_blocking(move || {
                 if let Some(new_rule) = save_policy_line(&ptype_c, &rule) {
-                    return adapter::add_policy(conn, new_rule);
+                    return adapter::add_policy(&conn, new_rule);
                 }
                 Ok(false)
             })
@@ -310,7 +332,7 @@ impl Adapter for DieselAdapter {
                     .iter()
                     .filter_map(|x: &Vec<String>| save_policy_line(&ptype_c, x))
                     .collect::<Vec<NewCasbinRule>>();
-                adapter::add_policies(conn, new_rules)
+                adapter::add_policies(&conn, new_rules)
             })
             .await
             .map_err(|e| casbin::error::AdapterError(Box::new(e)))?
@@ -323,7 +345,7 @@ impl Adapter for DieselAdapter {
                     .iter()
                     .filter_map(|x: &Vec<String>| save_policy_line(&ptype_c, x))
                     .collect::<Vec<NewCasbinRule>>();
-                adapter::add_policies(conn, new_rules)
+                adapter::add_policies(&conn, new_rules)
             })
             .await
         }
@@ -485,7 +507,7 @@ mod tests {
                     to_owned(vec!["bob", "data2", "write"]),
                     to_owned(vec!["data2_admin", "data2", "read"]),
                     to_owned(vec!["data2_admin", "data2", "write"]),
-                ]
+                ],
             )
             .await
             .is_ok());
@@ -499,7 +521,7 @@ mod tests {
                     to_owned(vec!["bob", "data2", "write"]),
                     to_owned(vec!["data2_admin", "data2", "read"]),
                     to_owned(vec!["data2_admin", "data2", "write"]),
-                ]
+                ],
             )
             .await
             .is_ok());
@@ -534,7 +556,7 @@ mod tests {
             .remove_policy(
                 "",
                 "g",
-                to_owned(vec!["alice", "data2_admin", "not_exists"])
+                to_owned(vec!["alice", "data2_admin", "not_exists"]),
             )
             .await
             .unwrap());
@@ -605,4 +627,32 @@ mod tests {
         assert!(!e.enforce(&["bob", "domain2", "data2", "read"]).unwrap());
         assert!(!e.enforce(&["bob", "domain2", "data2", "write"]).unwrap());
     }
+
+    // #[cfg_attr(feature = "runtime-async-std", async_std::test)]
+    // #[cfg_attr(feature = "runtime-tokio", tokio::test)]
+    // async fn test_load_filtered_policy() {
+    //     use casbin::prelude::*;
+    //
+    //     let file_adapter = FileAdapter::new("examples/rbac_policy.csv");
+    //
+    //     let m = DefaultModel::from_file("examples/rbac_model.conf")
+    //         .await
+    //         .unwrap();
+    //
+    //     let mut e = Enforcer::new(m, file_adapter).await.unwrap();
+    //     let mut adapter = DieselAdapter::new().unwrap();
+    //
+    //     assert!(adapter.save_policy(e.get_mut_model()).await.is_ok());
+    //     e.set_adapter(adapter).await.unwrap();
+    //
+    //     let filter = Filter {
+    //         p: vec!["data2_admin"],
+    //         g: vec!["alice"],
+    //     };
+    //
+    //     e.clear_policy();
+    //     e.load_filtered_policy(filter).await.unwrap();
+    //
+    //     assert!(e.enforce(&["alice", "data2", "write"]).unwrap());
+    // }
 }
