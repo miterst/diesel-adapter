@@ -16,6 +16,7 @@ futures = "0.3.5"
 tokio = { version = "0.2.21", default-features = false, optional = true }
 async-std = { version = "1.6.2", default-features = false, optional = true }
 dotenv = { version = "0.15.0", default-features = false }
+log = "^0.4"
 
 [features]
 default = ["postgres", "runtime-async-std"]

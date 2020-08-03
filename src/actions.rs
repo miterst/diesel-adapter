@@ -15,6 +15,7 @@ use crate::{
     models::{CasbinRule, NewCasbinRule},
 };
 use diesel::sql_types::Bool;
+use log::info;
 
 #[cfg(feature = "postgres")]
 pub type Connection = diesel::PgConnection;
@@ -228,6 +229,8 @@ pub(crate) fn load_policy_with_filter(
     filter_opt: Option<InternalFilter>,
 ) -> Result<Vec<CasbinRule>> {
     use schema::casbin_rules;
+
+    info!("Executing load_policy_with_filter");
 
     if let Some(filter) = filter_opt {
         let mut query = casbin_rules::table.into_boxed();
