@@ -230,7 +230,7 @@ pub(crate) fn load_policy_with_filter(
 ) -> Result<Vec<CasbinRule>> {
     use schema::casbin_rules;
 
-    info!("Executing load_policy_with_filter");
+    info!("Executing load_policy_with_filter: {:?}", filter_opt);
 
     if let Some(filter) = filter_opt {
         let mut query = casbin_rules::table.into_boxed();

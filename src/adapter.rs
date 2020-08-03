@@ -60,6 +60,7 @@ impl<'a> DieselAdapter {
     }
 }
 
+#[derive(Debug)]
 pub(crate) struct InternalFilter {
     pub p: Vec<String>,
     pub g: Vec<String>,
